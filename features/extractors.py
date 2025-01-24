@@ -55,21 +55,35 @@ class VisualFeatureExtractor(nn.Module):
             # Preprocess and process ResNet
             resnet_batch = torch.cat([self._preprocess_frame(f) for f in batch])
             with torch.no_grad():
+                # resnet_out = self.resnet(resnet_batch)
+                # # Ensure 2D output by squeezing and handling different shapes
+                # resnet_curr = (
+                #     resnet_out.squeeze().view(-1, resnet_out.shape[-1]).cpu().numpy()
+                # )
+                # resnet_feats.append(resnet_curr)
+                # Fix ResNet feature extraction
                 resnet_out = self.resnet(resnet_batch)
-                # Ensure 2D output by squeezing and handling different shapes
+                resnet_squeezed = resnet_out.squeeze()  # [batch_size, 2048]
                 resnet_curr = (
-                    resnet_out.squeeze().view(-1, resnet_out.shape[-1]).cpu().numpy()
+                    resnet_squeezed.view(-1, resnet_squeezed.shape[-1]).cpu().numpy()
                 )
                 resnet_feats.append(resnet_curr)
 
             # Preprocess and process Inception
             inception_batch = torch.cat([self._preprocess_inception(f) for f in batch])
             with torch.no_grad():
+                # inception_out = self.inception(inception_batch)
+                # # Ensure 2D output by squeezing and handling different shapes
+                # inception_curr = (
+                #     inception_out.squeeze()
+                #     .view(-1, inception_out.shape[-1])
+                #     .cpu()
+                #     .numpy()
+                # )
                 inception_out = self.inception(inception_batch)
-                # Ensure 2D output by squeezing and handling different shapes
+                inception_squeezed = inception_out.squeeze()  # [batch_size, 2048]
                 inception_curr = (
-                    inception_out.squeeze()
-                    .view(-1, inception_out.shape[-1])
+                    inception_squeezed.view(-1, inception_squeezed.shape[-1])
                     .cpu()
                     .numpy()
                 )
@@ -91,9 +105,14 @@ class VisualFeatureExtractor(nn.Module):
             else np.zeros((0, 2048))
         )
 
-        return np.concatenate(
+        final_feats = np.concatenate(
             [resnet_all.mean(axis=0), inception_all.mean(axis=0)]  # [2048]  # [2048]
         )  # Final shape [4096]
+
+        print()
+        print("THE FINAL FEATS ARE", final_feats.shape)
+        print()
+        return final_feats
 
     # def _preprocess_frame(self, frame):
     #     """ResNet preprocessing"""
@@ -175,11 +194,16 @@ class AudioFeatureExtractor(nn.Module):
 
     def forward(self, waveform):
         # Convert to tensor and validate
+        if len(waveform) < 1:
+            return np.zeros(296, dtype=np.float32)  # Return proper shape
         waveform = torch.from_numpy(waveform).float().unsqueeze(0)  # [1, T]
         print("WAVEFORM", waveform)
         print()
         print("LENGTH WAVEFORM", len(waveform))
         # Check audio duration
+        # Pad short audio clips
+        if waveform.shape[1] < 960:
+            waveform = torch.nn.functional.pad(waveform, (0, 960 - waveform.shape[1]))
         if len(waveform) < 960:  # 0.96 * 16000Hz = 1536 samples
             return np.zeros(296)
         # Fallback for empty/short audio
@@ -314,33 +338,28 @@ class AVProcessor:
         # Detect shots
         shots = self._detect_shots(video_path)
 
-        features = []
+        visual_features = []
+        audio_features = []
+
         for start_frame, end_frame in shots:
             # Visual features
             frames = self._extract_frames(cap, start_frame, end_frame)
             vis_feats = self.visual_extractor(frames)
+            visual_features.append(vis_feats)
 
             # Audio features
             start_time = start_frame / fps
             end_time = end_frame / fps
             start_sample = int(start_time * self.sr)
             end_sample = int(end_time * self.sr)
-            print(
-                f"Shot: frames {start_frame}-{end_frame}, samples {start_sample}-{end_sample}"
-            )
             audio_clip = waveform[start_sample:end_sample]
-            # import soundfile as sf
-
-            # sf.write(f"clip_{start_frame}_{end_frame}.wav", audio_clip, self.sr)
-            # for x in audio_clip:
-            #     print(x)
             aud_feats = self.audio_extractor(audio_clip)
-            features.append(np.concatenate([vis_feats, aud_feats]))
-        print("NEW SHOT IS COMING UP")
-        print()
-        print()
+            audio_features.append(aud_feats)
+
         cap.release()
-        return np.array(features)
+        return np.array(visual_features), np.array(
+            audio_features
+        )  # Return separated features
 
     def _extract_audio(self, video_path, audio_path):
         try:
@@ -372,21 +391,6 @@ class AVProcessor:
 
         scene_list = detect(video_path, ContentDetector())
         return [(start.get_frames(), end.get_frames()) for (start, end) in scene_list]
-
-    # def _extract_frames(self, cap, start, end):
-    #     """Optimized frame extraction with sampling"""
-    #     frames = []
-    #     cap.set(cv2.CAP_PROP_POS_FRAMES, start)
-    #     frame_interval = 3  # Only process every 3rd frame
-    #     max_frames = 100  # Maximum frames per shot
-
-    #     for _ in range(start, end):
-    #         ret, frame = cap.read()
-    #         if not ret or len(frames) >= max_frames:
-    #             break
-    #         if _ % frame_interval == 0:
-    #             frames.append(frame)
-    #     return frames
 
     def _extract_frames(self, cap, start, end):
         """Optimized frame extraction with sampling"""

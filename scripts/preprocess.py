@@ -1,3 +1,4 @@
+import shutil
 import os
 import cv2
 import numpy as np
@@ -12,49 +13,76 @@ def detect_shots(video_path):
     return [(start.get_frames(), end.get_frames()) for (start, end) in scene_list]
 
 
-# def extract_shot_features(video_path, shot_boundaries):
-#     cap = cv2.VideoCapture(video_path)
-#     fps = cap.get(cv2.CAP_PROP_FPS)
-#     visual_features = []
+# def preprocess_dataset(input_dir="Evaluation/Test", output_dir="data/processed"):
+#     processor = AVProcessor()
+#     # Creating output directory it doesn't exist
+#     os.makedirs(output_dir, exist_ok=True)
+#     for video_file in tqdm(os.listdir(input_dir)):
+#         if not video_file.endswith(".mp4"):
+#             continue
 
-#     # Extract visual features per shot
-#     for start_frame, end_frame in shot_boundaries:
-#         frames = []
-#         for frame_id in range(start_frame, end_frame):
-#             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
-#             ret, frame = cap.read()
-#             if ret:
-#                 frames.append(frame)
-#         visual_feats = extract_visual_features(frames)  # Use your ResNet50/InceptionV3
-#         visual_features.append(visual_feats.mean(axis=0))  # Average over frames
+#         video_path = os.path.join(input_dir, video_file)
+#         features = processor.process_video(video_path)
 
-#     # Extract audio features per shot
-#     audio = AudioSegment.from_file(video_path)
-#     audio_features = []
-#     for start_frame, end_frame in shot_boundaries:
-#         start_time = start_frame / fps * 1000  # Convert to milliseconds
-#         end_time = end_frame / fps * 1000
-#         audio_segment = audio[start_time:end_time]
-#         audio_feats = extract_audio_features(audio_segment)  # Use MFCC/VGGish
-#         audio_features.append(audio_feats.mean(axis=0))
-
-#     return np.array(visual_features), np.array(audio_features)
+#         # Save features
+#         vid = os.path.splitext(video_file)[0]
+#         np.save(os.path.join(output_dir, f"{vid}.npy"), features)
 
 
-def preprocess_dataset(input_dir="Evaluation/Test", output_dir="data/processed"):
+def preprocess_dataset(
+    input_dir="Evaluation/TVSum/videos", output_dir="data/processed"
+):
     processor = AVProcessor()
-    # Creating output directory it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
+
     for video_file in tqdm(os.listdir(input_dir)):
         if not video_file.endswith(".mp4"):
             continue
 
         video_path = os.path.join(input_dir, video_file)
-        features = processor.process_video(video_path)
-
-        # Save features
         vid = os.path.splitext(video_file)[0]
-        np.save(os.path.join(output_dir, f"{vid}.npy"), features)
+        vid_dir = os.path.join(output_dir, vid)
+
+        # Skip if already processed
+        if os.path.exists(vid_dir):
+            if all(
+                [
+                    os.path.exists(os.path.join(vid_dir, f))
+                    for f in ["visual.npy", "audio.npy"]
+                ]
+            ):
+                print(f"Skipping {vid} - already processed")
+                continue
+
+        # Create video-specific directory
+        os.makedirs(vid_dir, exist_ok=True)
+
+        try:
+            # Process with error handling
+            visual_feats, audio_feats = processor.process_video(video_path)
+            print("VISUAL FEATS", visual_feats[0].shape[0])
+            print("AUDIO FEATS", audio_feats[0].shape[0])
+            # Ensure consistent shapes
+            if (
+                len(visual_feats) == 0
+                or len(audio_feats) == 0
+                or visual_feats[0].shape[0] != 4096
+                or audio_feats[0].shape[0] != 296
+            ):
+                raise ValueError("Invalid feature dimensions")
+
+            np.save(
+                os.path.join(vid_dir, "visual.npy"),
+                np.array(visual_feats, dtype=np.float32),
+            )
+            np.save(
+                os.path.join(vid_dir, "audio.npy"),
+                np.array(audio_feats, dtype=np.float32),
+            )
+
+        except Exception as e:
+            print(f"Failed to process {vid}: {str(e)}")
+            shutil.rmtree(vid_dir, ignore_errors=True)
 
 
 print("ALREADY RUNNING")
