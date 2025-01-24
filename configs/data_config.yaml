@@ -1,0 +1,16 @@
+paths:
+  tvsum:
+    videos: "Evaluation/TVSum/videos"
+    annotations: "Evaluation/TVSum/ydata-tvsum50-data/data/ydata-tvsum50-anno.tsv"
+  summe:
+    videos: "Evaluation/SumMe/videos"
+    annotations: "Evaluation/SumMe/GT"
+    
+feature_params:
+  visual:
+    frame_size: 299
+    sample_rate: 2
+  audio:
+    sample_rate: 16000
+    vggish_params:
+      pca_path: "models/vggish_pca_params.npy"
