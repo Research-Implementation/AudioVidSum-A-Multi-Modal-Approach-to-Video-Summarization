@@ -1,11 +1,12 @@
 import shutil
 import os
 import cv2
+import time
 import numpy as np
 from pydub import AudioSegment
 from scenedetect import detect, ContentDetector
 from tqdm import tqdm
-from src.features.extractors import AVProcessor
+from src.features.extractors_im import AVProcessor
 
 
 def detect_shots(video_path):
@@ -34,6 +35,7 @@ def preprocess_dataset(
 ):
     processor = AVProcessor()
     os.makedirs(output_dir, exist_ok=True)
+    start_time = time.time()
 
     for video_file in tqdm(os.listdir(input_dir)):
         if not video_file.endswith(".mp4"):
@@ -57,32 +59,37 @@ def preprocess_dataset(
         # Create video-specific directory
         os.makedirs(vid_dir, exist_ok=True)
 
-        try:
-            # Process with error handling
-            visual_feats, audio_feats = processor.process_video(video_path)
-            print("VISUAL FEATS", visual_feats[0].shape[0])
-            print("AUDIO FEATS", audio_feats[0].shape[0])
-            # Ensure consistent shapes
-            if (
-                len(visual_feats) == 0
-                or len(audio_feats) == 0
-                or visual_feats[0].shape[0] != 4096
-                or audio_feats[0].shape[0] != 296
-            ):
-                raise ValueError("Invalid feature dimensions")
+        # try:
+        # Process with error handling
+        visual_feats, audio_feats = processor.process_video(video_path)
+        # print("AUDIO FEATS", audio_feats[0].shape[0])
+        # Ensure consistent shapes
+        # if (
+        #     len(visual_feats) == 0
+        #     or len(audio_feats) == 0
+        #     or visual_feats[0].shape[0] != 4096
+        #     or audio_feats[0].shape[0] != 384
+        # ):
+        #     raise ValueError("Invalid feature dimensions")
 
-            np.save(
-                os.path.join(vid_dir, "visual.npy"),
-                np.array(visual_feats, dtype=np.float32),
-            )
-            np.save(
-                os.path.join(vid_dir, "audio.npy"),
-                np.array(audio_feats, dtype=np.float32),
-            )
+        np.save(
+            os.path.join(vid_dir, "visual.npy"),
+            np.array(visual_feats, dtype=np.float32),
+        )
+        np.save(
+            os.path.join(vid_dir, "audio.npy"),
+            np.array(audio_feats, dtype=np.float32),
+        )
 
-        except Exception as e:
-            print(f"Failed to process {vid}: {str(e)}")
-            shutil.rmtree(vid_dir, ignore_errors=True)
+        # except Exception as e:
+        #     print(f"Failed to process {vid}: {str(e)}")
+        #     shutil.rmtree(vid_dir, ignore_errors=True)
+
+        # Calculate and print elapsed time
+        elapsed_time = time.time() - start_time
+        print(
+            f"Processed {len(os.listdir(input_dir))} videos, Time elapsed: {elapsed_time:.2f} seconds\n"
+        )
 
 
 print("ALREADY RUNNING")

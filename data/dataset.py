@@ -3,6 +3,7 @@ import torch
 import pandas as pd
 from scipy.io import loadmat
 import numpy as np
+from utils.alignments import align_shots_to_annotations
 
 
 class BaseDataset(torch.utils.data.Dataset):
@@ -32,9 +33,31 @@ class BaseDataset(torch.utils.data.Dataset):
         return features, scores
 
 
+def process_tvsum_annotations(df):
+    """Convert raw annotation dataframe to video-centric targets"""
+    # Average scores across users and normalize per video
+    processed = df.groupby("Video File Name")["Annotations"].apply(
+        lambda x: np.mean(np.vstack(x), axis=0)
+    )
+
+    # Normalize scores to 0-1 range per video
+    return processed.apply(
+        lambda x: (x - x.min()) / (x.max() - x.min() + 1e-8)
+    ).to_dict()
+
+
+def _calculate_shot_boundaries(self, total_frames):
+    """Create shot windows based on actual frame count"""
+    return [
+        (i, min(i + self.fps * self.shot_window, total_frames))
+        for i in range(0, total_frames, self.fps * self.shot_window)
+    ]
+
+
 class TVSumDataset(BaseDataset):
     def __init__(self, mat_annotations_df, feature_dir):
         self.annotations_df = mat_annotations_df
+        self.annotations = process_tvsum_annotations(mat_annotations_df)
         self.video_ids = self.annotations_df["Video File Name"].unique()
         self.feature_dir = feature_dir
 
@@ -60,6 +83,16 @@ class TVSumDataset(BaseDataset):
         )  # Shape: [n_frames]
 
         return features, torch.tensor(avg_scores).float()
+
+    def _load_annotations(self, vid):
+        # Get frame-level scores
+        frame_scores = self.annotations.get(vid, np.zeros(1))
+
+        # Convert to shot-based targets using your alignment function
+        shot_boundaries = self._calculate_shot_boundaries(len(frame_scores))
+        return align_shots_to_annotations(
+            shot_boundaries, torch.tensor(frame_scores).float(), self.fps
+        )
 
 
 class SumMeDataset(BaseDataset):

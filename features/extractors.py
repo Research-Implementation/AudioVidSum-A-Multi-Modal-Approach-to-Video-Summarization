@@ -11,6 +11,8 @@ from pydub import AudioSegment
 import numpy as np
 import gc
 from fastdtw import fastdtw
+import librosa.display
+import matplotlib.pyplot as plt
 from scipy.spatial.distance import cdist
 
 # --------------------------
@@ -55,12 +57,6 @@ class VisualFeatureExtractor(nn.Module):
             # Preprocess and process ResNet
             resnet_batch = torch.cat([self._preprocess_frame(f) for f in batch])
             with torch.no_grad():
-                # resnet_out = self.resnet(resnet_batch)
-                # # Ensure 2D output by squeezing and handling different shapes
-                # resnet_curr = (
-                #     resnet_out.squeeze().view(-1, resnet_out.shape[-1]).cpu().numpy()
-                # )
-                # resnet_feats.append(resnet_curr)
                 # Fix ResNet feature extraction
                 resnet_out = self.resnet(resnet_batch)
                 resnet_squeezed = resnet_out.squeeze()  # [batch_size, 2048]
@@ -72,14 +68,6 @@ class VisualFeatureExtractor(nn.Module):
             # Preprocess and process Inception
             inception_batch = torch.cat([self._preprocess_inception(f) for f in batch])
             with torch.no_grad():
-                # inception_out = self.inception(inception_batch)
-                # # Ensure 2D output by squeezing and handling different shapes
-                # inception_curr = (
-                #     inception_out.squeeze()
-                #     .view(-1, inception_out.shape[-1])
-                #     .cpu()
-                #     .numpy()
-                # )
                 inception_out = self.inception(inception_batch)
                 inception_squeezed = inception_out.squeeze()  # [batch_size, 2048]
                 inception_curr = (
@@ -187,107 +175,91 @@ class AudioFeatureExtractor(nn.Module):
         self.sr = sr
         self.vggish = torch.hub.load("harritaylor/torchvggish", "vggish")
         self.vggish.eval()
-        # Freeze parameters
         for param in self.vggish.parameters():
             param.requires_grad = False
-        self.mfcc_proj = nn.Linear(40, 128)  # Project 40 MFCC -> 128 dim
+        self.mfcc_proj = nn.Linear(40, 128)
+        self.feature_dim = 384
 
     def forward(self, waveform):
-        # Convert to tensor and validate
+        # Handle empty input
         if len(waveform) < 1:
-            return np.zeros(296, dtype=np.float32)  # Return proper shape
-        waveform = torch.from_numpy(waveform).float().unsqueeze(0)  # [1, T]
-        print("WAVEFORM", waveform)
-        print()
-        print("LENGTH WAVEFORM", len(waveform))
-        # Check audio duration
-        # Pad short audio clips
-        if waveform.shape[1] < 960:
-            waveform = torch.nn.functional.pad(waveform, (0, 960 - waveform.shape[1]))
-        if len(waveform) < 960:  # 0.96 * 16000Hz = 1536 samples
-            return np.zeros(296)
-        # Fallback for empty/short audio
-        if waveform.numel() == 0:
-            return np.zeros((1, 296))  # 2D array
+            return np.zeros(384, dtype=np.float32)
 
-        waveform = waveform.clamp(-1, 1)  # Ensure valid rang
-        # try:
-        #     # VGGish returns [n_frames, 128]
-        vggish_feats = self.vggish(waveform).squeeze(0).cpu().numpy()
-        # except Exception as e:
-        #     print(f"VGGish failed: {str(e)}")
-        #     vggish_feats = np.zeros((1, 128))  # 2D fallback
+        try:
+            # Convert to tensor and normalize if needed
+            waveform_tensor = torch.from_numpy(waveform).float()
+            if waveform_tensor.ndim == 1:
+                waveform_tensor = waveform_tensor.unsqueeze(0)
 
-        # Ensure MFCC/Mel are 2D [time, features]
-        mfcc = self._extract_mfcc(waveform.squeeze(0)).T  # [time, 40]
-        mel = self._extract_mel(waveform.squeeze(0)).T  # [time, 128]
+            # VGGish expects 0.96 seconds = 15360 samples at 16kHz
+            min_samples = 15360
 
-        # Handle empty features
-        # if mfcc.ndim == 1:
-        #     mfcc = mfcc.reshape(-1, 1)
-        # if mel.ndim == 1:
-        #     mel = mel.reshape(-1, 1)
+            # If shorter than minimum, repeat the audio to reach minimum length
+            if waveform_tensor.shape[1] < min_samples:
+                num_repeats = int(np.ceil(min_samples / waveform_tensor.shape[1]))
+                waveform_tensor = waveform_tensor.repeat(1, num_repeats)
+                waveform_tensor = waveform_tensor[:, :min_samples]
 
-        aligned_mfcc, aligned_mel = self._align_features(mfcc, mel, vggish_feats)
-        return np.concatenate(
-            [aligned_mfcc.mean(0), aligned_mel.mean(0), vggish_feats.mean(0)]
-        )
+            # Convert back to numpy for VGGish
+            waveform_np = waveform_tensor.squeeze(0).numpy()
+
+            # Ensure audio is not all zeros
+            if np.all(np.abs(waveform_np) < 1e-6):
+                print("Warning: Audio input is all zeros or very close to zero")
+                return np.zeros(384, dtype=np.float32)
+
+            try:
+                # Extract VGGish features
+                vggish_feats = self.vggish(waveform_np, fs=self.sr)
+                vggish_feats = vggish_feats.cpu().detach().numpy()
+                if vggish_feats.size == 0:
+                    print("VGGish returned empty features")
+                    vggish_feats = np.zeros((1, 128))
+            except Exception as e:
+                print(f"VGGish processing failed: {e}")
+                vggish_feats = np.zeros((1, 128))
+
+            # Extract MFCC
+            mfcc = self._extract_mfcc(waveform_tensor.squeeze(0))
+
+            # Extract Mel spectrogram
+            mel = self._extract_mel(waveform_tensor.squeeze(0))
+
+            # Ensure all features are 2D
+            mfcc = np.atleast_2d(mfcc)
+            mel = np.atleast_2d(mel)
+            vggish_feats = np.atleast_2d(vggish_feats)
+
+            # Take mean over time dimension
+            final_features = np.concatenate(
+                [mfcc.mean(axis=0), mel.mean(axis=0), vggish_feats.mean(axis=0)]
+            )
+
+            return final_features
+
+        except Exception as e:
+            print(f"Error in audio processing: {e}")
+            return np.zeros(384, dtype=np.float32)
 
     def _extract_mfcc(self, waveform):
-        mfcc = torchaudio.transforms.MFCC(sample_rate=self.sr, n_mfcc=40)(waveform)
-        mfcc = self.mfcc_proj(mfcc.permute(1, 0))  # [time, 128]
-        return mfcc.detach().numpy().reshape(-1, 128)  # Force 2D
+        try:
+            mfcc = torchaudio.transforms.MFCC(sample_rate=self.sr, n_mfcc=40)(waveform)
+            mfcc = self.mfcc_proj(mfcc.permute(1, 0))  # [time, 128]
+            return mfcc.detach().numpy()
+        except Exception as e:
+            print(f"MFCC extraction failed: {e}")
+            return np.zeros((1, 128))
 
     def _extract_mel(self, waveform):
-        mel = torchaudio.transforms.MelSpectrogram(sample_rate=self.sr, n_mels=128)(
-            waveform
-        )
-        mel = torch.log2(mel + 1e-6)  # Prevent log(0)
-        return mel.permute(1, 0).detach().numpy().reshape(-1, 128)
-
-    def _align_features(self, mfcc, mel, vggish):
-        """Robust DTW alignment with empty input handling"""
-        # Ensure 2D arrays and handle empty inputs
-
-        vggish = np.atleast_2d(vggish)
-        mfcc = np.atleast_2d(mfcc)
-        mel = np.atleast_2d(mel)
-
-        # Fallback for empty features
-        if vggish.size == 0 or mfcc.size == 0 or mel.size == 0:
-            return np.zeros(128), np.zeros(128)
-
-        # Align feature dimensions
-        feature_dim = min(vggish.shape[1], mfcc.shape[1], mel.shape[1])
-        vggish = vggish[:, :feature_dim]
-        mfcc = mfcc[:, :feature_dim]
-        mel = mel[:, :feature_dim]
-
-        # Ensure temporal consistency
-        min_length = min(vggish.shape[0], mfcc.shape[0], mel.shape[0])
-        if min_length == 0:
-            return np.zeros(feature_dim), np.zeros(feature_dim)
-
-        vggish = vggish[:min_length]
-        mfcc = mfcc[:min_length]
-        mel = mel[:min_length]
-
-        # Perform alignment with error handling
         try:
-            _, path = fastdtw(vggish, mfcc, dist=cdist)
-            aligned_mfcc = np.array([mfcc[p[1]] for p in path])
+            mel = torchaudio.transforms.MelSpectrogram(sample_rate=self.sr, n_mels=128)(
+                waveform
+            )
+            mel = torch.log2(mel + 1e-6)
+            return mel.permute(1, 0).detach().numpy()
         except Exception as e:
-            print(f"MFCC alignment failed: {str(e)}")
-            aligned_mfcc = np.zeros_like(mfcc)
-
-        try:
-            _, path = fastdtw(vggish, mel, dist=cdist)
-            aligned_mel = np.array([mel[p[1]] for p in path])
-        except Exception as e:
-            print(f"Mel alignment failed: {str(e)}")
-            aligned_mel = np.zeros_like(mel)
-        print("YELLO", aligned_mel, aligned_mfcc)
-        return aligned_mfcc, aligned_mel
+            print(f"Mel spectrogram extraction failed: {e}")
+            return np.zeros((1, 128))
 
 
 # --------------------------
@@ -337,11 +309,11 @@ class AVProcessor:
 
         # Detect shots
         shots = self._detect_shots(video_path)
-
+        print("WELL THE TOTAL NUMBER OF SHOTS ARE", len(shots))
         visual_features = []
         audio_features = []
-
-        for start_frame, end_frame in shots:
+        for i, (start_frame, end_frame) in enumerate(shots):
+            print(f"SHOT {i}")
             # Visual features
             frames = self._extract_frames(cap, start_frame, end_frame)
             vis_feats = self.visual_extractor(frames)
@@ -352,8 +324,15 @@ class AVProcessor:
             end_time = end_frame / fps
             start_sample = int(start_time * self.sr)
             end_sample = int(end_time * self.sr)
-            audio_clip = waveform[start_sample:end_sample]
-            aud_feats = self.audio_extractor(audio_clip)
+
+            # Ensure valid audio segment
+            if start_sample >= len(waveform) or end_sample <= start_sample:
+                print(f"Invalid audio segment for shot {i}, using zeros")
+                aud_feats = np.zeros(self.audio_extractor.feature_dim)
+            else:
+                audio_clip = waveform[start_sample:end_sample]
+                aud_feats = self.audio_extractor(audio_clip)
+
             audio_features.append(aud_feats)
 
         cap.release()
