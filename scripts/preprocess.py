@@ -31,14 +31,14 @@ def detect_shots(video_path):
 
 
 def preprocess_dataset(
-    input_dir="Evaluation/TVSum/videos", output_dir="data/processed"
+    input_dir="Evaluation/SumMe/videos", output_dir="data/processed"
 ):
     processor = AVProcessor()
     os.makedirs(output_dir, exist_ok=True)
     start_time = time.time()
 
     for video_file in tqdm(os.listdir(input_dir)):
-        if not video_file.endswith(".mp4"):
+        if not video_file.endswith(".webm"):
             continue
 
         video_path = os.path.join(input_dir, video_file)

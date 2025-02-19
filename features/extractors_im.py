@@ -8,6 +8,7 @@ import torchvision.models as models
 import cv2
 from pydub import AudioSegment
 import numpy as np
+import soundfile
 import gc
 from fastdtw import fastdtw
 import librosa.display
@@ -18,8 +19,11 @@ from scipy.spatial.distance import cdist
 class VisualFeatureExtractor(nn.Module):
     def __init__(self):
         super().__init__()
-        self.resnet = models.resnet50(pretrained=True)
-        self.inception = models.inception_v3(pretrained=True, aux_logits=True)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.resnet = models.resnet50(pretrained=True).to(self.device)
+        self.inception = models.inception_v3(pretrained=True, aux_logits=True).to(
+            self.device
+        )
 
         # Modify architectures
         self.resnet = nn.Sequential(*list(self.resnet.children())[:-1])
@@ -44,7 +48,9 @@ class VisualFeatureExtractor(nn.Module):
             batch = frames[i : i + batch_size]
 
             # Process ResNet features
-            resnet_batch = torch.cat([self._preprocess_frame(f) for f in batch])
+            resnet_batch = torch.cat([self._preprocess_frame(f) for f in batch]).to(
+                self.device
+            )
             with torch.no_grad():
                 resnet_out = self.resnet(resnet_batch)
                 resnet_squeezed = resnet_out.squeeze()
@@ -54,7 +60,9 @@ class VisualFeatureExtractor(nn.Module):
                 resnet_feats.append(resnet_curr)
 
             # Process Inception features
-            inception_batch = torch.cat([self._preprocess_inception(f) for f in batch])
+            inception_batch = torch.cat(
+                [self._preprocess_inception(f) for f in batch]
+            ).to(self.device)
             with torch.no_grad():
                 inception_out = self.inception(inception_batch)
                 inception_squeezed = inception_out.squeeze()
@@ -105,8 +113,11 @@ class VisualFeatureExtractor(nn.Module):
 class AudioFeatureExtractor(nn.Module):
     def __init__(self, sr=16000):
         super().__init__()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.sr = sr
-        self.vggish = torch.hub.load("harritaylor/torchvggish", "vggish")
+        self.vggish = torch.hub.load("harritaylor/torchvggish", "vggish").to(
+            self.device
+        )
         self.vggish.eval()
         for param in self.vggish.parameters():
             param.requires_grad = False
@@ -114,7 +125,7 @@ class AudioFeatureExtractor(nn.Module):
         self.feature_dim = 384  # 128 (VGGish) + 128 (MFCC) + 128 (Mel)
 
     def forward(self, waveform):
-        if len(waveform) < 1:
+        if waveform is None or len(waveform) < 1:
             return {
                 "vggish": np.zeros((1, 128)),
                 "mfcc": np.zeros((1, 128)),
@@ -122,7 +133,7 @@ class AudioFeatureExtractor(nn.Module):
             }
 
         try:
-            waveform_tensor = torch.from_numpy(waveform).float()
+            waveform_tensor = torch.from_numpy(waveform).float().to(self.device)
             if waveform_tensor.ndim == 1:
                 waveform_tensor = waveform_tensor.unsqueeze(0)
 
@@ -186,8 +197,10 @@ class AudioFeatureExtractor(nn.Module):
 
 class AVProcessor:
     def __init__(self):
-        self.visual_extractor = VisualFeatureExtractor()
-        self.audio_extractor = AudioFeatureExtractor()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {self.device}")
+        self.visual_extractor = VisualFeatureExtractor().to(self.device)
+        self.audio_extractor = AudioFeatureExtractor().to(self.device)
         self.sr = self.audio_extractor.sr
 
     def process_video(self, video_path):
@@ -210,17 +223,31 @@ class AVProcessor:
             self._extract_audio(video_path, audio_path)
             waveform, sr = torchaudio.load(audio_path)
             waveform = waveform.mean(dim=0).numpy()
+        except soundfile.LibsndfileError as load_e:
+            print(f"Torchaudio load error (LibsndfileError): {load_e}")
+            print(
+                "Assuming audio file is corrupted or incompatible. Processing without audio features."
+            )
+            waveform = None
 
-            # Get full audio features
-            full_audio_feats = self.audio_extractor(waveform)
         finally:
             if os.path.exists(temp_dir):
                 shutil.rmtree(temp_dir)
 
+        # Get full audio features
+        full_audio_feats = self.audio_extractor(waveform)
         # Align audio features with video frames
-        aligned_audio_feats = self._align_audio_to_video(
-            full_audio_feats, frame_times, audio_length=len(waveform) / self.sr
-        )
+        # Align audio features with video frames
+        if waveform is not None:
+            aligned_audio_feats = self._align_audio_to_video(
+                full_audio_feats,
+                frame_times,
+                audio_length=len(waveform) / self.sr if waveform is not None else 0,
+            )
+        else:
+            aligned_audio_feats = np.zeros(
+                (len(frames), self.audio_extractor.feature_dim)
+            )
 
         # Process visual features
         visual_features = [self.visual_extractor([frame]) for frame in frames]
@@ -234,7 +261,6 @@ class AVProcessor:
         normalized_vis_feat = self._normalize_features(np.array(visual_features))
         normalized_audio_feat = self._normalize_features(aligned_audio_feats)
         return normalized_vis_feat, normalized_audio_feat
-
 
     # Min-Max Normalization
     def _normalize_features(self, features):
@@ -293,18 +319,18 @@ class AVProcessor:
         frame_times = []
 
         # Calculate frame interval for 2 fps
-        frame_interval = int(fps / 2)
-        target_fps = 2
+        # frame_interval = int(fps / 2)
+        # target_fps = 2
 
         # Calculate total number of frames to extract
-        num_frames = int(total_frames / frame_interval)
+        num_frames = int(total_frames)
         print("THE TOTAL NUMBER OF FRAMES IS", num_frames)
 
-        print(f"Extracting {num_frames} frames at {target_fps} fps")
+        print(f"Extracting {num_frames} frames at {fps} fps")
 
         for frame_idx in range(num_frames):
             # Calculate target frame position
-            target_frame = frame_idx * frame_interval
+            target_frame = frame_idx  # * frame_interval
 
             # Set frame position
             cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
@@ -361,8 +387,29 @@ class AVProcessor:
             print(f"Error preprocessing frame: {e}")
             return None
 
+    # def _extract_audio(self, video_path, audio_path):
+    #     """Extract audio from video file"""
+    #     try:
+    #         audio = AudioSegment.from_file(video_path)
+
+    #         # Convert to mono and set sampling rate
+    #         audio = audio.set_channels(1)
+    #         audio = audio.set_frame_rate(16000)
+
+    #         # Export processed audio
+    #         audio.export(audio_path, format="wav", bitrate="256k")
+
+    #         # Verify exported file
+    #         if not os.path.exists(audio_path):
+    #             raise FileNotFoundError("Audio export failed")
+
+    #     except Exception as e:
+    #         print(f"Audio extraction failed: {e}")
+    #         raise
+
     def _extract_audio(self, video_path, audio_path):
         """Extract audio from video file"""
+        waveform = None  # Initialize waveform to None
         try:
             audio = AudioSegment.from_file(video_path)
 
@@ -377,9 +424,18 @@ class AVProcessor:
             if not os.path.exists(audio_path):
                 raise FileNotFoundError("Audio export failed")
 
+            # Load waveform using torchaudio after successful export
+            waveform, sr = torchaudio.load(audio_path)
+            waveform = waveform.mean(dim=0).numpy()
+
         except Exception as e:
             print(f"Audio extraction failed: {e}")
-            raise
+            print(
+                "Assuming video has no audio or audio extraction failed. Processing without audio features."
+            )
+            waveform = None  # Set waveform to None to indicate audio extraction failure
+
+        return waveform
 
     def process_batch(self, video_paths, batch_size=4):
         """
