@@ -2,3 +2,5 @@ src/data/processed/*
 *.pth
 data/processed/
 *.npy
+*.mp4
+*.webm
