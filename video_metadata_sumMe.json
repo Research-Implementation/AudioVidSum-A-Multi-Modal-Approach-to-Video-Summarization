@@ -1,0 +1,122 @@
+{
+  "Air_Force_One": {
+    "fps": 25,
+    "total_frames": 4494,
+    "path": "..\\Evaluation\\SumMe\\videos\\Air_Force_One.webm"
+  },
+  "Base jumping": {
+    "fps": 29,
+    "total_frames": 4760,
+    "path": "..\\Evaluation\\SumMe\\videos\\Base jumping.webm"
+  },
+  "Bearpark_climbing": {
+    "fps": 25,
+    "total_frames": 3341,
+    "path": "..\\Evaluation\\SumMe\\videos\\Bearpark_climbing.webm"
+  },
+  "Bike Polo": {
+    "fps": 30,
+    "total_frames": 3091,
+    "path": "..\\Evaluation\\SumMe\\videos\\Bike Polo.webm"
+  },
+  "Bus_in_Rock_Tunnel": {
+    "fps": 30,
+    "total_frames": 5136,
+    "path": "..\\Evaluation\\SumMe\\videos\\Bus_in_Rock_Tunnel.webm"
+  },
+  "car_over_camera": {
+    "fps": 29,
+    "total_frames": 4383,
+    "path": "..\\Evaluation\\SumMe\\videos\\car_over_camera.webm"
+  },
+  "Car_railcrossing": {
+    "fps": 29,
+    "total_frames": 5075,
+    "path": "..\\Evaluation\\SumMe\\videos\\Car_railcrossing.webm"
+  },
+  "Cockpit_Landing": {
+    "fps": 29,
+    "total_frames": 9060,
+    "path": "..\\Evaluation\\SumMe\\videos\\Cockpit_Landing.webm"
+  },
+  "Cooking": {
+    "fps": 15,
+    "total_frames": 1299,
+    "path": "..\\Evaluation\\SumMe\\videos\\Cooking.webm"
+  },
+  "Eiffel Tower": {
+    "fps": 25,
+    "total_frames": 4996,
+    "path": "..\\Evaluation\\SumMe\\videos\\Eiffel Tower.webm"
+  },
+  "Excavators river crossing": {
+    "fps": 25,
+    "total_frames": 9721,
+    "path": "..\\Evaluation\\SumMe\\videos\\Excavators river crossing.webm"
+  },
+  "Fire Domino": {
+    "fps": 30,
+    "total_frames": 1642,
+    "path": "..\\Evaluation\\SumMe\\videos\\Fire Domino.webm"
+  },
+  "Jumps": {
+    "fps": 25,
+    "total_frames": 983,
+    "path": "..\\Evaluation\\SumMe\\videos\\Jumps.webm"
+  },
+  "Kids_playing_in_leaves": {
+    "fps": 29,
+    "total_frames": 3187,
+    "path": "..\\Evaluation\\SumMe\\videos\\Kids_playing_in_leaves.webm"
+  },
+  "Notre_Dame": {
+    "fps": 24,
+    "total_frames": 4609,
+    "path": "..\\Evaluation\\SumMe\\videos\\Notre_Dame.webm"
+  },
+  "Paintball": {
+    "fps": 23,
+    "total_frames": 6130,
+    "path": "..\\Evaluation\\SumMe\\videos\\Paintball.webm"
+  },
+  "paluma_jump": {
+    "fps": 29,
+    "total_frames": 2574,
+    "path": "..\\Evaluation\\SumMe\\videos\\paluma_jump.webm"
+  },
+  "playing_ball": {
+    "fps": 30,
+    "total_frames": 3120,
+    "path": "..\\Evaluation\\SumMe\\videos\\playing_ball.webm"
+  },
+  "Playing_on_water_slide": {
+    "fps": 29,
+    "total_frames": 3066,
+    "path": "..\\Evaluation\\SumMe\\videos\\Playing_on_water_slide.webm"
+  },
+  "Saving dolphines": {
+    "fps": 29,
+    "total_frames": 6683,
+    "path": "..\\Evaluation\\SumMe\\videos\\Saving dolphines.webm"
+  },
+  "Scuba": {
+    "fps": 30,
+    "total_frames": 2221,
+    "path": "..\\Evaluation\\SumMe\\videos\\Scuba.webm"
+  },
+  "St Maarten Landing": {
+    "fps": 25,
+    "total_frames": 1751,
+    "path": "..\\Evaluation\\SumMe\\videos\\St Maarten Landing.webm"
+  },
+  "Statue of Liberty": {
+    "fps": 25,
+    "total_frames": 3891,
+    "path": "..\\Evaluation\\SumMe\\videos\\Statue of Liberty.webm"
+  },
+  "Valparaiso_Downhill": {
+    "fps": 29,
+    "total_frames": 5178,
+    "path": "..\\Evaluation\\SumMe\\videos\\Valparaiso_Downhill.webm"
+  }
+}

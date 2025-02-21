@@ -450,10 +450,10 @@ def train_model(
     annotations_df,
     video_metadata,
     num_epochs=50,
-    batch_size=32,
+    batch_size=16,
     lr=0.002,
     num_classes=5,
-    patience=20,
+    patience=40,
     collate_fn=custom_collate,
 ):
     start_time = time.time()
@@ -534,8 +534,40 @@ def train_model(
     best_metrics = None
     no_improve_epochs = 0
 
+    total_train_samples = 0
+    total_valid_targets = 0
     
-
+    print("\nCounting training samples...")
+    for features, audio_features, targets, lengths in train_loader:
+        valid_targets = (targets != -1).sum().item()
+        total_train_samples += features.size(0) * features.size(1)  # batch_size * sequence_length
+        total_valid_targets += valid_targets
+    
+    print(f"\nTraining Dataset Statistics:")
+    print(f"Total input samples: {total_train_samples:,}")
+    print(f"Total valid targets (excluding padding): {total_valid_targets:,}")
+    print(f"Number of classes: {num_classes}")
+    print(f"Input feature dimensions:")
+    print(f"  Visual features: {features.size(-1)}")
+    print(f"  Audio features: {audio_features.size(-1)}")
+    
+    # Count validation samples
+    total_val_samples = 0
+    total_val_targets = 0
+    
+    print("\nCounting validation samples...")
+    for features, audio_features, targets, lengths in val_loader:
+        valid_targets = (targets != -1).sum().item()
+        total_val_samples += features.size(0) * features.size(1)
+        total_val_targets += valid_targets
+    
+    print(f"\nValidation Dataset Statistics:")
+    print(f"Total input samples: {total_val_samples:,}")
+    print(f"Total valid targets (excluding padding): {total_val_targets:,}")
+    
+    print(f"\nTotal Dataset Size:")
+    print(f"Total inputs: {total_train_samples + total_val_samples:,}")
+    print(f"Total valid targets: {total_valid_targets + total_val_targets:,}")
     def calculate_metrics(predictions, targets):
         # Remove ignored indices (-1)
         mask = targets != -1
@@ -653,7 +685,7 @@ def train_model(
                 targets = targets.to(device)
 
                 if use_amp:
-                    with torch.cuda.amp.autocast():
+                    with torch.amp.autocast(device_type="cuda"):
                         logits = model(visual=features, audio=audio_features)
                         loss = criterion(
                             logits.contiguous().view(-1, num_classes),

@@ -112,85 +112,6 @@ def load_or_generate_metadata(video_dir=None, metadata_path="video_metadata.json
     return metadata
 
 
-# class TVSumDataset(Dataset):
-#     def __init__(
-#         self, features, audio_features, annotations_df, video_metadata, num_classes=5
-#     ):
-#         self.features = []
-#         self.audio_features = []
-#         self.targets = []
-#         self.lengths = []
-#         self.total_target = 0
-
-#         # Group annotations by video file name
-#         video_groups = annotations_df.groupby("Video File Name")
-
-#         for video_id, feature_array in features.items():
-#             if (
-#                 video_id not in video_metadata
-#                 or video_id not in video_groups.groups
-#                 or video_id not in audio_features
-#             ):
-#                 continue
-
-#             fps = video_metadata[video_id]["fps"]
-#             total_frames = video_metadata[video_id]["total_frames"]
-#             audio_feature_array = audio_features[video_id]
-
-#             # Process annotations
-#             video_annotations = video_groups.get_group(video_id)["Annotations"].tolist()
-#             processed_annotations = []
-#             for annotation in video_annotations:
-#                 if isinstance(annotation, str):
-#                     scores = [
-#                         float(x.strip()) for x in annotation.strip("[]").split(",")
-#                     ]
-#                     processed_annotations.append(scores)
-#                 else:
-#                     processed_annotations.append(annotation)
-
-#             # Process annotations for all frames
-#             selected_annotations = []
-#             for annotation in processed_annotations:
-#                 selected_annotation = select_frames_from_annotations(
-#                     annotation, fps, total_frames
-#                 )
-#                 selected_annotations.append(selected_annotation)
-
-#             avg_annotation = np.mean(selected_annotations, axis=0)
-#             discrete_scores = np.round(avg_annotation).astype(int)
-#             discrete_scores = np.clip(discrete_scores, 1, num_classes)
-
-#             # Skip if shapes don't match
-#             if len(discrete_scores) != len(feature_array) or len(
-#                 discrete_scores
-#             ) != len(audio_feature_array):
-#                 print(f"Skipping {video_id} due to shape mismatch:")
-#                 print(
-#                     f"Scores: {len(discrete_scores)}, Features: {len(feature_array)}, Audio: {len(audio_feature_array)}"
-#                 )
-#                 continue
-
-#             self.features.append(torch.FloatTensor(feature_array))
-#             self.audio_features.append(torch.FloatTensor(audio_feature_array))
-#             self.targets.append(torch.LongTensor(discrete_scores))
-#             self.lengths.append(len(feature_array))
-#             self.total_target += len(discrete_scores)
-#             print("DISCRETE SCORES ARE", len(discrete_scores))
-#             print("THE TOTAL NUMBER OF TARGET IS", self.total_target)
-
-#     def __len__(self):
-#         return len(self.features)
-
-#     def __getitem__(self, idx):
-#         return (
-#             self.features[idx],
-#             self.audio_features[idx],
-#             self.targets[idx],
-#             self.lengths[idx],
-#         )  # Return audio features
-
-
 class TVSumDataset(Dataset):
     def __init__(
         self, features, audio_features, annotations_df, video_metadata, num_classes=5
@@ -267,130 +188,152 @@ class TVSumDataset(Dataset):
 
 
 class CrossModalAttention(nn.Module):
-    """Bahdanau-style attention between visual and audio features"""
-
-    def __init__(self, vis_dim: int, aud_dim: int, hidden_dim: int = 512):
+    def __init__(self, vis_dim: int, aud_dim: int, hidden_dim: int = 768):
         super().__init__()
         self.vis_proj = nn.Linear(vis_dim, hidden_dim)
         self.aud_proj = nn.Linear(aud_dim, hidden_dim)
-        self.energy = nn.Linear(hidden_dim, 1)
+        self.attention = nn.MultiheadAttention(
+            hidden_dim, num_heads=8, batch_first=True
+        )
 
+        # Initialize weights
         nn.init.xavier_uniform_(self.vis_proj.weight)
         nn.init.xavier_uniform_(self.aud_proj.weight)
-        nn.init.xavier_uniform_(self.energy.weight)
 
     def forward(self, visual: torch.Tensor, audio: torch.Tensor) -> torch.Tensor:
         # Project both modalities to same space
-        proj_vis = torch.tanh(self.vis_proj(visual))  # [B, T, H]
-        proj_aud = torch.tanh(self.aud_proj(audio))  # [B, T, H]
+        vis_proj = self.vis_proj(visual)  # [B, T, H]
+        aud_proj = self.aud_proj(audio)  # [B, T, H]
 
-        # Compute attention scores
-        combined = proj_vis + proj_aud.unsqueeze(1)  # [B, T, T, H]
-        energy = self.energy(torch.tanh(combined)).squeeze(-1)  # [B, T, T]
-        attention = F.softmax(energy, dim=-1)
-
-        return attention
+        # Apply multi-head attention
+        attended_features, _ = self.attention(vis_proj, aud_proj, aud_proj)
+        return attended_features
 
 
 class AVSummarizer(nn.Module):
     def __init__(self, vis_dim: int = 4096, aud_dim: int = 384, num_classes=5):
         super().__init__()
-        self.num_classes = num_classes
 
-        # Reduce visual input dimension more aggressively
+        # Dimension constants
+        self.hidden_dim = 768
+
+        # Visual feature processing
         self.vis_dim_reduction = nn.Sequential(
-            nn.Linear(vis_dim, 512), nn.ReLU(), nn.Dropout(0.3), nn.Linear(512, 256)
+            nn.LayerNorm(vis_dim),
+            nn.Linear(vis_dim, 1024),
+            nn.GELU(),
+            nn.Dropout(0.4),
+            nn.Linear(1024, self.hidden_dim),
+            nn.LayerNorm(self.hidden_dim),
         )
 
-        # Smaller LSTM for visual encoding
+        # LSTM for visual features
         self.visual_encoder = nn.LSTM(
-            256, 128, bidirectional=True, batch_first=True, num_layers=1, dropout=0.3
-        )
-
-        # Smaller audio encoder
-        self.audio_encoder = nn.Sequential(
-            nn.Linear(aud_dim, 128),
-            nn.LayerNorm(128),
-            nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(128, 64),
-            nn.LayerNorm(64),
-            nn.ReLU(),
-        )
-
-        # More efficient cross-modal attention
-        self.cross_attention = nn.MultiheadAttention(
-            256 + 64, 4, dropout=0.1, batch_first=True
-        )
-
-        # Smaller transformer with fewer heads and layers
-        transformer_layer = nn.TransformerEncoderLayer(
-            d_model=256 + 64,  # Combined feature size
-            nhead=4,  # Reduced number of attention heads
-            dim_feedforward=512,  # Smaller feedforward dimension
-            dropout=0.1,
+            self.hidden_dim,
+            self.hidden_dim // 2,
+            bidirectional=True,
             batch_first=True,
-            norm_first=True,  # More stable training
-        )
-        self.transformer = nn.TransformerEncoder(
-            transformer_layer, num_layers=1  # Reduced number of layers
+            num_layers=3,
+            dropout=0.4,
         )
 
-        # Smaller prediction head
+        # Audio feature processing
+        self.audio_encoder = nn.Sequential(
+            nn.LayerNorm(aud_dim),
+            nn.Linear(aud_dim, 512),
+            nn.GELU(),
+            nn.Dropout(0.4),
+            nn.Linear(512, self.hidden_dim),
+            nn.LayerNorm(self.hidden_dim),
+            nn.GELU(),
+        )
+
+        # Cross-modal attention
+        self.cross_modal_attention = CrossModalAttention(
+            vis_dim=self.hidden_dim, aud_dim=self.hidden_dim, hidden_dim=self.hidden_dim
+        )
+
+        # Enhanced temporal modeling with corrected normalization
+        self.temporal_conv = nn.Sequential(
+            # First conv block
+            nn.Conv1d(self.hidden_dim, self.hidden_dim, kernel_size=5, padding=2),
+            nn.BatchNorm1d(self.hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.4),
+            # Second conv block
+            nn.Conv1d(self.hidden_dim, self.hidden_dim, kernel_size=3, padding=1),
+            nn.BatchNorm1d(self.hidden_dim),
+            nn.GELU(),
+        )
+
+        # Transformer layers
+        transformer_layer = nn.TransformerEncoderLayer(
+            d_model=self.hidden_dim,
+            nhead=12,
+            dim_feedforward=2048,
+            dropout=0.4,
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(transformer_layer, num_layers=4)
+
+        # Prediction head
         self.head = nn.Sequential(
-            nn.Linear(256 + 64, 128),
-            nn.LayerNorm(128),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, num_classes),
+            nn.LayerNorm(self.hidden_dim),
+            nn.Linear(self.hidden_dim, 512),
+            nn.GELU(),
+            nn.Dropout(0.4),
+            nn.Linear(512, 256),
+            nn.GELU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, num_classes),
         )
 
-        self._init_weights()
-
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.LSTM):
-                for name, param in m.named_parameters():
-                    if "weight_ih" in name:
-                        nn.init.xavier_uniform_(param.data)
-                    elif "weight_hh" in name:
-                        nn.init.orthogonal_(param.data)
-                    elif "bias" in name:
-                        nn.init.zeros_(param.data)
+        # Additional LayerNorm for post-conv normalization
+        self.post_conv_norm = nn.LayerNorm(self.hidden_dim)
 
     def forward(self, visual: torch.Tensor, audio: torch.Tensor):
-        # Process in smaller chunks if sequence is too long
         batch_size, seq_len = visual.shape[0], visual.shape[1]
-        chunk_size = 128  # Process sequences in chunks of 128 frames
-
+        chunk_size = 128
         outputs = []
+
         for i in range(0, seq_len, chunk_size):
             end_idx = min(i + chunk_size, seq_len)
 
-            # Process chunk
+            # Process chunks
             vis_chunk = visual[:, i:end_idx]
             aud_chunk = audio[:, i:end_idx]
 
-            # Reduce dimensions
-            vis_chunk = self.vis_dim_reduction(vis_chunk)
-            vis_encoded, _ = self.visual_encoder(vis_chunk)
+            # Process visual features with residual connection
+            vis_features = self.vis_dim_reduction(vis_chunk)
+            vis_residual = vis_features
+            vis_encoded, _ = self.visual_encoder(vis_features)
+            vis_encoded = vis_encoded + vis_residual
+
+            # Process audio features
             aud_encoded = self.audio_encoder(aud_chunk)
 
-            # Concatenate features
-            combined = torch.cat([vis_encoded, aud_encoded], dim=-1)
+            # Apply cross-modal attention
+            attended_features = self.cross_modal_attention(vis_encoded, aud_encoded)
 
-            # Apply attention and transformer
-            combined = self.transformer(combined)
+            # Add residual connection
+            combined = attended_features + vis_encoded
 
-            # Get predictions for chunk
-            chunk_output = self.head(combined)
+            # Apply temporal convolution
+            temp_conv = combined.transpose(1, 2)  # [B, T, H] -> [B, H, T]
+            temp_conv = self.temporal_conv(temp_conv)
+            temp_conv = temp_conv.transpose(1, 2)  # [B, H, T] -> [B, T, H]
+            temp_conv = self.post_conv_norm(
+                temp_conv
+            )  # Apply normalization after reshaping
+
+            # Apply transformer with residual connection
+            transformer_out = self.transformer(temp_conv + combined)
+
+            # Get predictions
+            chunk_output = self.head(transformer_out)
             outputs.append(chunk_output)
 
-        # Concatenate chunks back together
         return torch.cat(outputs, dim=1)
 
 
@@ -449,11 +392,11 @@ def train_model(
     audio_features_dict,
     annotations_df,
     video_metadata,
-    num_epochs=50,
-    batch_size=32,
-    lr=0.002,
+    num_epochs=60,
+    batch_size=16,
+    lr=0.001,
     num_classes=5,
-    patience=20,
+    patience=40,
     collate_fn=custom_collate,
 ):
     start_time = time.time()
@@ -521,10 +464,10 @@ def train_model(
 
     model = AVSummarizer(num_classes=num_classes).to(device)
     print(f"Model moved to {device}")
-
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     scaler = torch.amp.GradScaler() if use_amp else None
     criterion = nn.CrossEntropyLoss(ignore_index=-1)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.001)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=2, verbose=True
     )
@@ -534,7 +477,42 @@ def train_model(
     best_metrics = None
     no_improve_epochs = 0
 
-    
+    total_train_samples = 0
+    total_valid_targets = 0
+
+    print("\nCounting training samples...")
+    for features, audio_features, targets, lengths in train_loader:
+        valid_targets = (targets != -1).sum().item()
+        total_train_samples += features.size(0) * features.size(
+            1
+        )  # batch_size * sequence_length
+        total_valid_targets += valid_targets
+
+    print(f"\nTraining Dataset Statistics:")
+    print(f"Total input samples: {total_train_samples:,}")
+    print(f"Total valid targets (excluding padding): {total_valid_targets:,}")
+    print(f"Number of classes: {num_classes}")
+    print(f"Input feature dimensions:")
+    print(f"  Visual features: {features.size(-1)}")
+    print(f"  Audio features: {audio_features.size(-1)}")
+
+    # Count validation samples
+    total_val_samples = 0
+    total_val_targets = 0
+
+    print("\nCounting validation samples...")
+    for features, audio_features, targets, lengths in val_loader:
+        valid_targets = (targets != -1).sum().item()
+        total_val_samples += features.size(0) * features.size(1)
+        total_val_targets += valid_targets
+
+    print(f"\nValidation Dataset Statistics:")
+    print(f"Total input samples: {total_val_samples:,}")
+    print(f"Total valid targets (excluding padding): {total_val_targets:,}")
+
+    print(f"\nTotal Dataset Size:")
+    print(f"Total inputs: {total_train_samples + total_val_samples:,}")
+    print(f"Total valid targets: {total_valid_targets + total_val_targets:,}")
 
     def calculate_metrics(predictions, targets):
         # Remove ignored indices (-1)
@@ -653,7 +631,7 @@ def train_model(
                 targets = targets.to(device)
 
                 if use_amp:
-                    with torch.cuda.amp.autocast():
+                    with torch.amp.autocast(device_type="cuda"):
                         logits = model(visual=features, audio=audio_features)
                         loss = criterion(
                             logits.contiguous().view(-1, num_classes),
@@ -812,7 +790,7 @@ def main():
         annotations_df = pickle.load(f)
 
     # Train model
-    model = train_model(
+    model, best_metrics = train_model(
         features_dict,
         audio_features_dict,
         annotations_df,
@@ -820,10 +798,15 @@ def main():
         collate_fn=custom_collate,
     )
 
-    # Save model
-    torch.save(
-        model.state_dict(), "av_tvsum_model.pth"
-    )  # Saved model name changed to av_tvsum_model
+    # Save model and metrics
+    print("\nSaving model and metrics...")
+    torch.save(model.state_dict(), "av_tvsum_model.pth")
+
+    # Optionally save the metrics too
+    with open("training_metrics.json", "w") as f:
+        json.dump(best_metrics, f, indent=2)
+
+    print("Model and metrics saved successfully!")
 
 
 if __name__ == "__main__":
